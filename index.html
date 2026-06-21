@@ -307,41 +307,86 @@ const layout = []; // per-question: {cx, cy, color, cssIdx, fontPx}
 const rasterCanvas = document.createElement('canvas');
 const rctx = rasterCanvas.getContext('2d', { willReadFrequently: true });
 
-function sampleGlyph(text, fontPx) {
-  const s = SUPERSAMPLE;
-  const f = `300 ${fontPx * s}px Inter, 'Helvetica Neue', Arial, sans-serif`;
-  rctx.font = f;
-  const metrics = rctx.measureText(text);
-  const w = Math.ceil(metrics.width) + 8 * s;
-  const h = Math.ceil(fontPx * s * 1.8);
-  rasterCanvas.width = w;
-  rasterCanvas.height = h;
-  rctx.clearRect(0, 0, w, h);
-  rctx.font = f;
-  rctx.fillStyle = '#fff';
-  rctx.textBaseline = 'middle';
-  rctx.textAlign = 'left';
-  rctx.fillText(text, 4 * s, h * 0.5);
+function fontStr(px) {
+  return `300 ${px}px Inter, 'Helvetica Neue', Arial, sans-serif`;
+}
 
-  const data = rctx.getImageData(0, 0, w, h).data;
-  const pts = [];
-  let minX = w, maxX = 0, minY = h, maxY = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (data[(y * w + x) * 4 + 3] > 130) {
-        pts.push(x, y);
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
+// Each question rides its own gentle sine baseline (after the hand-lettered
+// wavy lines in the Guggenheim installation).
+function makeWave(fontPx, width) {
+  const amp = fontPx * (0.28 + Math.random() * 0.26);
+  const periods = 0.5 + Math.random() * 0.9;          // ~half to ~1.4 waves
+  const freq = width > 1 ? (periods * Math.PI * 2) / width : 0.01;
+  const phase = Math.random() * Math.PI * 2;
+  return { amp, freq, phase };
+}
+
+// Lay characters along the wave; each glyph is rotated tangent to it.
+function layoutChars(text, fontPx, wave) {
+  rctx.font = fontStr(fontPx);
+  let x = 0;
+  const chars = [];
+  for (const ch of text) {
+    const w = rctx.measureText(ch).width;
+    const y = wave.amp * Math.sin(x * wave.freq + wave.phase);
+    const rot = Math.atan(wave.amp * wave.freq * Math.cos(x * wave.freq + wave.phase));
+    chars.push({ ch, x, y, rot });
+    x += w;
+  }
+  return { chars, width: x };
+}
+
+// Rasterize the wavy text (supersampled) and return particle attractor points,
+// centered on the glyph-run's bounding box. bcx/bcy are that center expressed
+// in the same local frame as char positions, so the overlay can align to it.
+function rasterSample(chars, fontPx, wave) {
+  const s = SUPERSAMPLE;
+  const padX = fontPx;
+  const last = chars.length ? chars[chars.length - 1].x : 0;
+  const widthC = last + fontPx * 2;
+  const heightC = fontPx * 2 + wave.amp * 2 + fontPx;
+  const midY = heightC * 0.5;
+
+  rasterCanvas.width = Math.ceil(widthC * s);
+  rasterCanvas.height = Math.ceil(heightC * s);
+  rctx.setTransform(s, 0, 0, s, 0, 0);
+  rctx.clearRect(0, 0, widthC, heightC);
+  rctx.font = fontStr(fontPx);
+  rctx.fillStyle = '#fff';
+  rctx.textBaseline = 'alphabetic';
+  rctx.textAlign = 'left';
+  rctx.translate(padX, midY);
+  for (const c of chars) {
+    rctx.save();
+    rctx.translate(c.x, c.y);
+    rctx.rotate(c.rot);
+    rctx.fillText(c.ch, 0, 0);
+    rctx.restore();
+  }
+  rctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  const W = rasterCanvas.width, H = rasterCanvas.height;
+  const data = rctx.getImageData(0, 0, W, H).data;
+  const raw = [];
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (data[(y * W + x) * 4 + 3] > 130) {
+        const lx = x / s - padX;   // local frame: matches char x
+        const ly = y / s - midY;
+        raw.push(lx, ly);
+        if (lx < minX) minX = lx; if (lx > maxX) maxX = lx;
+        if (ly < minY) minY = ly; if (ly > maxY) maxY = ly;
       }
     }
   }
-  const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5;
-  // return points centered on origin, in css px
-  const out = [];
-  for (let k = 0; k < pts.length; k += 2) {
-    out.push((pts[k] - cx) / s, (pts[k + 1] - cy) / s);
+  const bcx = (minX + maxX) * 0.5, bcy = (minY + maxY) * 0.5;
+  const local = new Float32Array(raw.length);
+  for (let k = 0; k < raw.length; k += 2) {
+    local[k]     = raw[k]     - bcx;
+    local[k + 1] = raw[k + 1] - bcy;
   }
-  return out; // flat [lx, ly, ...]
+  return { local, bcx, bcy };
 }
 
 function build() {
@@ -356,33 +401,80 @@ function build() {
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   gl.viewport(0, 0, glCanvas.width, glCanvas.height);
 
-  const margin = 0.06;
+  const margin = 0.05;
   layout.length = 0;
 
-  // distribute questions along the tangled paths
+  // ---- 1. typography: per-question font, wave, and char layout ----
   const perPath = Math.ceil(NQ / PATHS.length);
-  const arrays = []; // gather per question {glyph, scatter, cx, cy}
-  let count = 0;
-
+  const cxs = new Float32Array(NQ), cys = new Float32Array(NQ);
+  const hws = new Float32Array(NQ), hhs = new Float32Array(NQ);
+  const meta = [];
   for (let i = 0; i < NQ; i++) {
+    const fontPx = FONT_PX + (Math.random() - 0.5) * 4;
+    rctx.font = fontStr(fontPx);
+    const width = rctx.measureText(QUESTIONS[i]).width;
+    const wave = makeWave(fontPx, width);
+    const lay = layoutChars(QUESTIONS[i], fontPx, wave);
+    meta.push({ fontPx, wave, chars: lay.chars });
+
+    // initial placement along a tangled path
     const pathIdx = i % PATHS.length;
     const along = Math.floor(i / PATHS.length);
     const t = (along + 0.5 + (Math.random() - 0.5) * 0.7) / perPath;
     const p = pointOnPath(PATHS[pathIdx], t);
-    const jitter = (Math.random() - 0.5) * 0.14;
+    const jitter = (Math.random() - 0.5) * 0.16;
     let nx = p.x + p.nx * jitter + (Math.random() - 0.5) * 0.05;
     let ny = p.y + p.ny * jitter + (Math.random() - 0.5) * 0.05;
     nx = Math.max(margin, Math.min(1 - margin, nx));
     ny = Math.max(margin, Math.min(1 - margin, ny));
-    const cx = nx * W, cy = ny * H;
+    cxs[i] = nx * W; cys[i] = ny * H;
+    hws[i] = lay.width * 0.5;
+    hhs[i] = fontPx * 0.9 + wave.amp;
+  }
 
-    const fontPx = FONT_PX + (Math.random() - 0.5) * 3;
-    const glyph = sampleGlyph(QUESTIONS[i], fontPx);
-    const nPix = glyph.length / 2;
+  // ---- 2. relax: allow subtle collisions, prevent illegible stacking ----
+  const KX = 0.80, KY = 0.85;     // <1 => boxes may gently overlap, not stack
+  const mX = margin * W, mY = margin * H;
+  for (let it = 0; it < 90; it++) {
+    for (let i = 0; i < NQ; i++) {
+      for (let j = i + 1; j < NQ; j++) {
+        let dx = cxs[j] - cxs[i], dy = cys[j] - cys[i];
+        const minx = (hws[i] + hws[j]) * KX;
+        const miny = (hhs[i] + hhs[j]) * KY;
+        const ox = minx - Math.abs(dx);
+        const oy = miny - Math.abs(dy);
+        if (ox > 0 && oy > 0) {                  // overlapping too much
+          if (ox / minx < oy / miny) {           // resolve on shallower axis
+            const s = (dx === 0 ? (Math.random() - 0.5) : Math.sign(dx)) * ox * 0.5;
+            cxs[i] -= s; cxs[j] += s;
+          } else {
+            const s = (dy === 0 ? (Math.random() - 0.5) : Math.sign(dy)) * oy * 0.5;
+            cys[i] -= s; cys[j] += s;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < NQ; i++) {
+      cxs[i] = Math.max(mX, Math.min(W - mX, cxs[i]));
+      cys[i] = Math.max(mY, Math.min(H - mY, cys[i]));
+    }
+  }
 
+  // ---- 3. sample glyphs at final positions, gather particle data ----
+  const arrays = [];
+  let count = 0;
+  for (let i = 0; i < NQ; i++) {
+    const m = meta[i];
+    const rs = rasterSample(m.chars, m.fontPx, m.wave);
     const N = PARTICLES_PER_QUESTION;
-    layout.push({ cx, cy, cssIdx: i % PALETTE.length, fontPx, text: QUESTIONS[i] });
-    arrays.push({ glyph, nPix, cx, cy, N, color: PALETTE[i % PALETTE.length] });
+    layout.push({
+      cx: cxs[i], cy: cys[i], cssIdx: i % PALETTE.length,
+      fontPx: m.fontPx, chars: m.chars, bcx: rs.bcx, bcy: rs.bcy,
+    });
+    arrays.push({
+      local: rs.local, nPix: rs.local.length / 2,
+      cx: cxs[i], cy: cys[i], N, color: PALETTE[i % PALETTE.length],
+    });
     count += N;
   }
 
@@ -402,8 +494,8 @@ function build() {
       if (q.nPix > 0) {
         const pi = (Math.floor(Math.random() * q.nPix)) * 2;
         const jit = q.N > q.nPix ? 1.1 : 0.4;
-        gx = q.cx + q.glyph[pi]     + (Math.random() - 0.5) * jit;
-        gy = q.cy + q.glyph[pi + 1] + (Math.random() - 0.5) * jit;
+        gx = q.cx + q.local[pi]     + (Math.random() - 0.5) * jit;
+        gy = q.cy + q.local[pi + 1] + (Math.random() - 0.5) * jit;
       } else {
         gx = q.cx; gy = q.cy;
       }
@@ -469,11 +561,21 @@ function frame(now) {
     if (fade <= 0.01) continue;
     const L = layout[i];
     const c = PALETTE_CSS[L.cssIdx];
+    tctx.save();
+    // align the wavy run's bbox center onto the question center (matches particles)
+    tctx.translate(L.cx - L.bcx, L.cy - L.bcy);
     tctx.font = `300 ${L.fontPx}px Inter, 'Helvetica Neue', Arial, sans-serif`;
-    tctx.textAlign = 'center';
-    tctx.textBaseline = 'middle';
+    tctx.textAlign = 'left';
+    tctx.textBaseline = 'alphabetic';
     tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.6).toFixed(3)})`;
-    tctx.fillText(L.text, L.cx, L.cy);
+    for (const ch of L.chars) {
+      tctx.save();
+      tctx.translate(ch.x, ch.y);
+      tctx.rotate(ch.rot);
+      tctx.fillText(ch.ch, 0, 0);
+      tctx.restore();
+    }
+    tctx.restore();
   }
 
   requestAnimationFrame(frame);
