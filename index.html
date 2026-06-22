@@ -353,41 +353,54 @@ function fontStr(px) {
   return `300 ${px}px Inter, 'Helvetica Neue', Arial, sans-serif`;
 }
 
-// Each question rides its own gentle sine baseline (after the hand-lettered
-// wavy lines in the Guggenheim installation).
+// Each question rides its own baseline (after the hand-lettered wavy lines in
+// the Guggenheim installation). Waves vary a lot in amplitude/frequency/phase
+// so overlapping questions never share the same curve.
 function makeWave(fontPx, width) {
-  const amp = fontPx * (0.28 + Math.random() * 0.26);
-  const periods = 0.5 + Math.random() * 0.9;          // ~half to ~1.4 waves
+  const amp = fontPx * (0.22 + Math.random() * 0.55);
+  const periods = 0.55 + Math.random() * 1.25;        // ~half to ~1.8 waves
   const freq = width > 1 ? (periods * Math.PI * 2) / width : 0.01;
   const phase = Math.random() * Math.PI * 2;
   return { amp, freq, phase };
 }
 
-// Lay characters along the wave; each glyph is rotated tangent to it.
-function layoutChars(text, fontPx, wave) {
+// Lay characters along the wave, then tilt the whole baseline so neighbouring
+// questions run at different slopes and stay legible where they cross.
+function layoutChars(text, fontPx, wave, tilt) {
   rctx.font = fontStr(fontPx);
+  const ct = Math.cos(tilt), st = Math.sin(tilt);
   let x = 0;
   const chars = [];
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
   for (const ch of text) {
     const w = rctx.measureText(ch).width;
-    const y = wave.amp * Math.sin(x * wave.freq + wave.phase);
-    const rot = Math.atan(wave.amp * wave.freq * Math.cos(x * wave.freq + wave.phase));
-    chars.push({ ch, x, y, rot });
+    const yy = wave.amp * Math.sin(x * wave.freq + wave.phase);
+    const wr = Math.atan(wave.amp * wave.freq * Math.cos(x * wave.freq + wave.phase));
+    const X = x * ct - yy * st;          // rotate baseline by tilt
+    const Y = x * st + yy * ct;
+    chars.push({ ch, x: X, y: Y, rot: wr + tilt });
+    if (X < minx) minx = X; if (X > maxx) maxx = X;
+    if (Y < miny) miny = Y; if (Y > maxy) maxy = Y;
     x += w;
   }
-  return { chars, width: x };
+  return { chars, width: x, minx, maxx, miny, maxy };
 }
 
 // Rasterize the wavy text (supersampled) and return particle attractor points,
 // centered on the glyph-run's bounding box. bcx/bcy are that center expressed
 // in the same local frame as char positions, so the overlay can align to it.
-function rasterSample(chars, fontPx, wave) {
+function rasterSample(chars, fontPx) {
   const s = SUPERSAMPLE;
-  const padX = fontPx;
-  const last = chars.length ? chars[chars.length - 1].x : 0;
-  const widthC = last + fontPx * 2;
-  const heightC = fontPx * 2 + wave.amp * 2 + fontPx;
-  const midY = heightC * 0.5;
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+  for (const c of chars) {
+    if (c.x < minx) minx = c.x; if (c.x > maxx) maxx = c.x;
+    if (c.y < miny) miny = c.y; if (c.y > maxy) maxy = c.y;
+  }
+  if (!isFinite(minx)) { minx = maxx = miny = maxy = 0; }
+  const pad = fontPx * 1.9;                 // room for glyph height + tilt
+  const widthC = (maxx - minx) + pad * 2;
+  const heightC = (maxy - miny) + pad * 2;
+  const offX = pad - minx, offY = pad - miny;
 
   rasterCanvas.width = Math.ceil(widthC * s);
   rasterCanvas.height = Math.ceil(heightC * s);
@@ -397,7 +410,7 @@ function rasterSample(chars, fontPx, wave) {
   rctx.fillStyle = '#fff';
   rctx.textBaseline = 'alphabetic';
   rctx.textAlign = 'left';
-  rctx.translate(padX, midY);
+  rctx.translate(offX, offY);
   for (const c of chars) {
     rctx.save();
     rctx.translate(c.x, c.y);
@@ -414,8 +427,8 @@ function rasterSample(chars, fontPx, wave) {
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (data[(y * W + x) * 4 + 3] > 130) {
-        const lx = x / s - padX;   // local frame: matches char x
-        const ly = y / s - midY;
+        const lx = x / s - offX;   // local frame: matches char x
+        const ly = y / s - offY;
         raw.push(lx, ly);
         if (lx < minX) minX = lx; if (lx > maxX) maxX = lx;
         if (ly < minY) minY = ly; if (ly > maxY) maxY = ly;
@@ -446,7 +459,23 @@ function build() {
   const margin = 0.05;
   layout.length = 0;
 
-  // ---- 1. typography: per-question font, wave, and char layout ----
+  // ---- 1. typography: per-question font (scaled to fit), wave, char layout ----
+  // Pass A: pick a raw font + measure, so we can scale everything to the
+  // viewport. All 50 boxes must fit without overlap, even in phone portrait.
+  // Only shrink enough that the widest question fits the width (keeps text
+  // readable at ~14–18px on desktop, a little smaller on narrow phones).
+  const usableW = (1 - margin * 2) * W;
+  let maxW = 1;
+  const rawFont = new Float32Array(NQ);
+  for (let i = 0; i < NQ; i++) {
+    const fp = FONT_PX + (Math.random() - 0.5) * 4;
+    rawFont[i] = fp;
+    rctx.font = fontStr(fp);
+    const w = rctx.measureText(QUESTIONS[i]).width;
+    if (w > maxW) maxW = w;
+  }
+  const fscale = Math.min(1, (usableW * 0.92) / maxW);
+
   // even but organic coverage (blue-noise), no obvious grid
   const seeds = bestCandidate(NQ, W, H, margin);
 
@@ -454,34 +483,38 @@ function build() {
   const hws = new Float32Array(NQ), hhs = new Float32Array(NQ);
   const meta = [];
   for (let i = 0; i < NQ; i++) {
-    const fontPx = FONT_PX + (Math.random() - 0.5) * 4;
+    const fontPx = rawFont[i] * fscale;
     rctx.font = fontStr(fontPx);
     const width = rctx.measureText(QUESTIONS[i]).width;
     const wave = makeWave(fontPx, width);
-    const lay = layoutChars(QUESTIONS[i], fontPx, wave);
+    // baseline tilt: alternating-ish slopes so overlaps cross, not merge
+    const tilt = (Math.random() < 0.5 ? -1 : 1) * (6 + Math.random() * 9) * Math.PI / 180;
+    const lay = layoutChars(QUESTIONS[i], fontPx, wave, tilt);
     meta.push({ fontPx, wave, chars: lay.chars });
 
-    // blue-noise seed → spread evenly without a grid
-    const hw = lay.width * 0.5, hh = fontPx * 0.9 + wave.amp;
+    // half-extents from the actual (tilted) bounding box
+    const hw = (lay.maxx - lay.minx) * 0.5 + fontPx * 0.7;
+    const hh = (lay.maxy - lay.miny) * 0.5 + fontPx * 0.9;
     cxs[i] = clampAxis(seeds[i][0], margin * W + hw, (1 - margin) * W - hw, W * 0.5);
     cys[i] = clampAxis(seeds[i][1], margin * H + hh, (1 - margin) * H - hh, H * 0.5);
     hws[i] = hw;
     hhs[i] = hh;
   }
 
-  // ---- 2. relax: allow subtle collisions, prevent illegible stacking ----
-  const KX = 0.80, KY = 0.85;     // <1 => boxes may gently overlap, not stack
+  // ---- 2. relax: keep the even spread and stop near-total stacking, but
+  //          ALLOW overlap — distinct tilts/curves keep crossings legible ----
+  const KX = 0.55, KY = 0.45;     // <1 => boxes may overlap, just not stack
   const mX = margin * W, mY = margin * H;
-  for (let it = 0; it < 90; it++) {
+  for (let it = 0; it < 120; it++) {
     for (let i = 0; i < NQ; i++) {
       for (let j = i + 1; j < NQ; j++) {
-        let dx = cxs[j] - cxs[i], dy = cys[j] - cys[i];
+        const dx = cxs[j] - cxs[i], dy = cys[j] - cys[i];
         const minx = (hws[i] + hws[j]) * KX;
         const miny = (hhs[i] + hhs[j]) * KY;
         const ox = minx - Math.abs(dx);
         const oy = miny - Math.abs(dy);
-        if (ox > 0 && oy > 0) {                  // overlapping too much
-          if (ox / minx < oy / miny) {           // resolve on shallower axis
+        if (ox > 0 && oy > 0) {                  // overlapping too much → ease apart
+          if (ox < oy) {                          // resolve on least-penetration axis
             const s = (dx === 0 ? (Math.random() - 0.5) : Math.sign(dx)) * ox * 0.5;
             cxs[i] -= s; cxs[j] += s;
           } else {
@@ -502,7 +535,7 @@ function build() {
   let count = 0;
   for (let i = 0; i < NQ; i++) {
     const m = meta[i];
-    const rs = rasterSample(m.chars, m.fontPx, m.wave);
+    const rs = rasterSample(m.chars, m.fontPx);
     const N = PARTICLES_PER_QUESTION;
     layout.push({
       cx: cxs[i], cy: cys[i], cssIdx: i % PALETTE.length,
@@ -602,7 +635,10 @@ function frame(now) {
   gl.bindVertexArray(null);
 
   // ---- crisp text, fading with the particles' saturation ----
+  // Composite additively so it reads like projected light: overlapping
+  // questions blend/brighten where they cross instead of occluding.
   tctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  tctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < NQ; i++) {
     const b = brightArr[i];
     if (b < 0.78) continue;
@@ -616,7 +652,7 @@ function frame(now) {
     tctx.font = `300 ${L.fontPx}px Inter, 'Helvetica Neue', Arial, sans-serif`;
     tctx.textAlign = 'left';
     tctx.textBaseline = 'alphabetic';
-    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.6).toFixed(3)})`;
+    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.5).toFixed(3)})`;
     for (const ch of L.chars) {
       tctx.save();
       tctx.translate(ch.x, ch.y);
@@ -626,6 +662,7 @@ function frame(now) {
     }
     tctx.restore();
   }
+  tctx.globalCompositeOperation = 'source-over';
 
   requestAnimationFrame(frame);
 }
