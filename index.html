@@ -118,15 +118,6 @@ const SUPERSAMPLE = 4;               // glyph raster oversampling for dense grai
 const FONT_PX = 17;                   // displayed glyph height (thin grotesque)
 const SCATTER_SIGMA = 62;             // dormant cloud radius (css px)
 
-/* ----- Implied branching/tangled paths (normalized 0..1) ----- *
- * Invisible. Questions are strung along them so clusters cross. */
-const PATHS = [
-  [[0.08, 0.24], [0.30, 0.40], [0.52, 0.50], [0.74, 0.40], [0.92, 0.52]],
-  [[0.14, 0.82], [0.34, 0.60], [0.50, 0.52], [0.70, 0.66], [0.88, 0.78]],
-  [[0.50, 0.08], [0.42, 0.32], [0.48, 0.52], [0.56, 0.72], [0.52, 0.92]],
-  [[0.18, 0.50], [0.36, 0.44], [0.54, 0.46], [0.72, 0.40], [0.90, 0.30]],
-];
-
 /* ================================================================== */
 
 const glCanvas   = document.getElementById('gl');
@@ -267,20 +258,37 @@ const buffers = { scatter: gl.createBuffer(), glyph: gl.createBuffer(), center: 
                   color: gl.createBuffer(), id: gl.createBuffer(), seed: gl.createBuffer() };
 
 /* ----------------------- Layout helpers ----------------------- */
-function pointOnPath(path, t) {
-  t = Math.max(0, Math.min(1, t));
-  const segs = path.length - 1;
-  const f = t * segs;
-  const i = Math.min(segs - 1, Math.floor(f));
-  const lt = f - i;
-  const a = path[i], b = path[i + 1];
-  const x = a[0] + (b[0] - a[0]) * lt;
-  const y = a[1] + (b[1] - a[1]) * lt;
-  // tangent -> normal for perpendicular jitter
-  let tx = b[0] - a[0], ty = b[1] - a[1];
-  const len = Math.hypot(tx, ty) || 1;
-  tx /= len; ty /= len;
-  return { x, y, nx: -ty, ny: tx };
+// Best-candidate (blue-noise) sampling: even coverage, but organic — no grid.
+function bestCandidate(n, W, H, margin) {
+  const mx = margin * W, my = margin * H;
+  const rw = (1 - 2 * margin) * W, rh = (1 - 2 * margin) * H;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    if (pts.length === 0) {
+      pts.push([mx + Math.random() * rw, my + Math.random() * rh]);
+      continue;
+    }
+    const k = Math.min(24, 6 + pts.length); // candidates per insertion
+    let best = null, bestD = -1;
+    for (let c = 0; c < k; c++) {
+      const x = mx + Math.random() * rw, y = my + Math.random() * rh;
+      let nearest = Infinity;
+      for (const p of pts) {
+        const dx = p[0] - x, dy = p[1] - y;
+        const dd = dx * dx + dy * dy;
+        if (dd < nearest) nearest = dd;
+      }
+      if (nearest > bestD) { bestD = nearest; best = [x, y]; }
+    }
+    pts.push(best);
+  }
+  return pts;
+}
+
+// Clamp keeping the run on-screen; if it's wider than the usable span, center it.
+function clampAxis(v, lo, hi, fallback) {
+  if (hi <= lo) return fallback;
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function gaussian() {
@@ -292,11 +300,14 @@ function gaussian() {
 
 /* Per-question schedule (overlapping, nothing synced) */
 const schedule = QUESTIONS.map((_, i) => {
-  const activeDur  = 20 + Math.random() * 20;   // 20–40s active
-  const dormantDur = 8  + Math.random() * 22;   // gap before it returns
-  const ramp       = 3.5 + Math.random() * 2.5; // materialize / dissolve time
-  const start      = Math.random() * 35;        // staggered first appearance
-  return { activeDur, dormantDur, ramp, start, cycle: activeDur + dormantDur };
+  const activeDur  = 20 + Math.random() * 20;            // 20–40s active
+  // long dormant gap so only ~a third are visible at any moment
+  const dormantDur = activeDur * (1.8 + Math.random() * 1.2);
+  const ramp       = 3.5 + Math.random() * 2.5;          // materialize / dissolve time
+  const cycle      = activeDur + dormantDur;
+  // seed phase across the whole cycle => steady-state density from t=0
+  const start      = Math.random() * cycle;
+  return { activeDur, dormantDur, ramp, start, cycle };
 });
 
 function easeCubicJS(x) {
@@ -436,7 +447,9 @@ function build() {
   layout.length = 0;
 
   // ---- 1. typography: per-question font, wave, and char layout ----
-  const perPath = Math.ceil(NQ / PATHS.length);
+  // even but organic coverage (blue-noise), no obvious grid
+  const seeds = bestCandidate(NQ, W, H, margin);
+
   const cxs = new Float32Array(NQ), cys = new Float32Array(NQ);
   const hws = new Float32Array(NQ), hhs = new Float32Array(NQ);
   const meta = [];
@@ -448,19 +461,12 @@ function build() {
     const lay = layoutChars(QUESTIONS[i], fontPx, wave);
     meta.push({ fontPx, wave, chars: lay.chars });
 
-    // initial placement along a tangled path
-    const pathIdx = i % PATHS.length;
-    const along = Math.floor(i / PATHS.length);
-    const t = (along + 0.5 + (Math.random() - 0.5) * 0.7) / perPath;
-    const p = pointOnPath(PATHS[pathIdx], t);
-    const jitter = (Math.random() - 0.5) * 0.16;
-    let nx = p.x + p.nx * jitter + (Math.random() - 0.5) * 0.05;
-    let ny = p.y + p.ny * jitter + (Math.random() - 0.5) * 0.05;
-    nx = Math.max(margin, Math.min(1 - margin, nx));
-    ny = Math.max(margin, Math.min(1 - margin, ny));
-    cxs[i] = nx * W; cys[i] = ny * H;
-    hws[i] = lay.width * 0.5;
-    hhs[i] = fontPx * 0.9 + wave.amp;
+    // blue-noise seed → spread evenly without a grid
+    const hw = lay.width * 0.5, hh = fontPx * 0.9 + wave.amp;
+    cxs[i] = clampAxis(seeds[i][0], margin * W + hw, (1 - margin) * W - hw, W * 0.5);
+    cys[i] = clampAxis(seeds[i][1], margin * H + hh, (1 - margin) * H - hh, H * 0.5);
+    hws[i] = hw;
+    hhs[i] = hh;
   }
 
   // ---- 2. relax: allow subtle collisions, prevent illegible stacking ----
@@ -486,8 +492,8 @@ function build() {
       }
     }
     for (let i = 0; i < NQ; i++) {
-      cxs[i] = Math.max(mX, Math.min(W - mX, cxs[i]));
-      cys[i] = Math.max(mY, Math.min(H - mY, cys[i]));
+      cxs[i] = clampAxis(cxs[i], mX + hws[i], W - mX - hws[i], W * 0.5);
+      cys[i] = clampAxis(cys[i], mY + hhs[i], H - mY - hhs[i], H * 0.5);
     }
   }
 
