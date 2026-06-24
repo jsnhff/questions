@@ -189,34 +189,68 @@ function layoutChars(text, fontPx, wave, tilt) {
 }
 
 /* ----------------------- schedule ----------------------- *
- * Each question fades in for the first time at a staggered moment, then
- * cycles forever (materialize / hold / dissolve / dormant gap). The intro
- * spread means the page starts empty: one question appears, then the rest. */
+ * A small live scheduler. The page starts empty; one question fades in
+ * almost immediately, then the rest arrive gently. At most CAP questions
+ * are ever on screen at once (it typically breathes a bit below that), so
+ * the field never feels crowded. Each question fades black -> colour ->
+ * black, then rests for a long dormant gap before it can return. */
+const CAP = 11;                 // hard ceiling of simultaneous questions
+// Intro arrivals are paced to the long-run rate (~one new question every few
+// seconds) so the field fills GENTLY to ~8 and breathes, instead of slamming
+// the cap. First question still appears almost immediately.
+const INTRO_GAP = 3.2;          // seconds between the first appearances
+
 const order = shuffle(Array.from({ length: NQ }, (_, i) => i));
-const INTRO_GAP = 1.15;      // seconds between successive first-appearances
-const schedule = new Array(NQ);
+const state = new Array(NQ);
 order.forEach((qi, rank) => {
-  const activeDur  = 20 + Math.random() * 20;            // 20–40s visible
-  const dormantDur = activeDur * (1.8 + Math.random() * 1.2);
-  const ramp       = 3.5 + Math.random() * 2.5;          // fade in / out time
-  const cycle      = activeDur + dormantDur;
-  const firstStart = 1.0 + rank * INTRO_GAP + (Math.random() - 0.5) * 0.8;
-  schedule[qi] = { activeDur, dormantDur, ramp, cycle, firstStart };
+  state[qi] = {
+    active: false, startT: 0, activeDur: 0, ramp: 0,
+    nextStart: 0.2 + rank * INTRO_GAP,   // first appearance (gentle intro)
+  };
 });
 
-// brightness 0..1 for question i at a given time (eased fade up & down)
+function randActive()  { return 18 + Math.random() * 16; }   // 18–34s visible
+function randRamp()    { return 3 + Math.random() * 2.5; }   // fade in/out time
+function randDormant() { return 70 + Math.random() * 120; }  // long rest, 70–190s
+
+// Advance the scheduler: retire finished questions, then admit waiting ones
+// up to the cap (longest-waiting first).
+function updateSchedule(time) {
+  let activeCount = 0;
+  for (let i = 0; i < NQ; i++) {
+    const s = state[i];
+    if (!s.active) continue;
+    if (time - s.startT >= s.activeDur) {
+      s.active = false;
+      s.nextStart = time + randDormant();
+    } else activeCount++;
+  }
+  if (activeCount >= CAP) return;
+  const elig = [];
+  for (let i = 0; i < NQ; i++) {
+    const s = state[i];
+    if (!s.active && s.nextStart <= time) elig.push(i);
+  }
+  elig.sort((a, b) => state[a].nextStart - state[b].nextStart);
+  for (let k = 0; k < elig.length && activeCount < CAP; k++) {
+    const s = state[elig[k]];
+    s.active = true; s.startT = time;
+    s.activeDur = randActive(); s.ramp = randRamp();
+    activeCount++;
+  }
+}
+
+// brightness 0..1 for question i (eased fade up from black & back down)
 function brightAt(i, time) {
-  const s = schedule[i];
-  const t = time - s.firstStart;
-  if (t < 0) return 0;                       // not yet appeared
-  const local = t % s.cycle;
+  const s = state[i];
+  if (!s.active) return 0;
+  const local = time - s.startT;
   const ramp = Math.min(s.ramp, s.activeDur * 0.45);
   let a;
-  if (local < ramp) a = local / ramp;                       // fade from black
-  else if (local < s.activeDur - ramp) a = 1;               // hold (crisp)
-  else if (local < s.activeDur) a = (s.activeDur - local) / ramp; // fade to black
-  else a = 0;                                               // dormant gap
-  return easeInOutCubic(a);
+  if (local < ramp) a = local / ramp;                        // fade from black
+  else if (local < s.activeDur - ramp) a = 1;                // hold (crisp)
+  else a = (s.activeDur - local) / ramp;                     // fade to black
+  return easeInOutCubic(Math.max(0, Math.min(1, a)));
 }
 
 /* ----------------------- layout ----------------------- */
@@ -318,6 +352,8 @@ let startTime = 0;
 function frame(now) {
   const time = (now - startTime) / 1000;
   const W = window.innerWidth, H = window.innerHeight;
+
+  updateSchedule(time);
 
   tctx.clearRect(0, 0, W, H);
   tctx.globalCompositeOperation = 'lighter'; // overlaps blend like projected light
