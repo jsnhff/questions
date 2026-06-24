@@ -313,9 +313,14 @@ function bestCandidate(n, W, H, margin) {
 // Each question rides its own wavy, tilted baseline so overlaps cross at
 // different slopes/curves and stay legible.
 function makeWave(fontPx, width) {
-  const amp = fontPx * (0.22 + Math.random() * 0.55);
-  const periods = 0.55 + Math.random() * 1.25;
+  let amp = fontPx * (0.22 + Math.random() * 0.5);
+  const periods = 0.4 + Math.random() * 0.9;
   const freq = width > 1 ? (periods * Math.PI * 2) / width : 0.01;
+  // Cap the baseline slope so short questions don't curl tightly enough for
+  // the rotated glyphs to fold over each other. Short words have a high freq,
+  // so this clamps their amplitude to a gentle curve; long words keep theirs.
+  const MAX_SLOPE = 0.28;
+  amp = Math.min(amp, MAX_SLOPE / freq);
   const phase = Math.random() * Math.PI * 2;
   return { amp, freq, phase };
 }
@@ -448,7 +453,7 @@ function build() {
     tctx.font = fontStr(fontPx, 400);
     const width = tctx.measureText(QUESTIONS[i]).width;
     const wave = makeWave(fontPx, width);
-    const tilt = (Math.random() < 0.5 ? -1 : 1) * (6 + Math.random() * 9) * Math.PI / 180;
+    const tilt = (Math.random() < 0.5 ? -1 : 1) * (5 + Math.random() * 7) * Math.PI / 180;
     const lay = layoutChars(QUESTIONS[i], fontPx, wave, tilt);
 
     const hw = (lay.maxx - lay.minx) * 0.5 + fontPx * 0.7;
