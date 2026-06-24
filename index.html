@@ -113,10 +113,10 @@ const PALETTE = [
 const PALETTE_CSS = PALETTE.map(c => c.map(v => Math.round(v * 255)));
 
 /* ----- Tunables ----- */
-const PARTICLES_PER_QUESTION = 7000; // within the 8k spirit; 50 q's run at once
+const PARTICLES_PER_QUESTION = 3000; // fewer, subtler grains per question
 const SUPERSAMPLE = 4;               // glyph raster oversampling for dense grain
-const FONT_PX = 17;                   // displayed glyph height (thin grotesque)
-const SCATTER_SIGMA = 62;             // dormant cloud radius (css px)
+const FONT_PX = 18;                   // displayed glyph height (thin grotesque)
+const SCATTER_SIGMA = 40;             // dormant cloud radius (css px) — tighter halo
 
 /* ================================================================== */
 
@@ -181,37 +181,39 @@ void main(){
   // (and back down) as they form rather than all at once.
   float pb = smoothstep(aSeed * 0.55, aSeed * 0.55 + 0.45, bright);
 
-  // low-amplitude drift while dormant; fades out as the glyph forms
-  float t = uTime * 0.06;
+  // low-amplitude drift while dormant; eases out as the glyph forms
+  // (smaller amplitude => tighter coalesce, no halo "border")
+  float t = uTime * 0.05;
   vec2 q = aScatter * 0.012;
   float nx = noise(q + vec2(t, 0.0) + aSeed * 11.0);
   float ny = noise(q + vec2(0.0, -t) + 31.4 + aSeed * 7.0);
-  vec2 drift = (vec2(nx, ny) - 0.5) * 2.0 * 24.0 * (1.0 - form);
+  vec2 drift = (vec2(nx, ny) - 0.5) * 2.0 * 13.0 * (1.0 - form);
 
-  // micro shimmer once formed, so letters breathe
-  float ms = uTime * 1.7;
-  vec2 micro = (vec2(noise(q*4.0 + ms + aSeed*3.0),
-                     noise(q*4.0 - ms + 7.0)) - 0.5) * 1.6 * form;
+  // persistent, slow float once formed, so the word feels alive and ethereal
+  // rather than a static grid of dots
+  float ms = uTime * 0.5;
+  vec2 fl = (vec2(noise(q * 2.3 + ms + aSeed * 5.0),
+                  noise(q * 2.3 - ms + 9.0)) - 0.5) * 2.0 * 2.8 * form;
 
   // letterform target, gently shrunk toward the question center while fading
   vec2 glyph = mix(aCenter, aGlyph, scale);
-  vec2 pos = mix(aScatter + drift, glyph + micro, form);
+  vec2 pos = mix(aScatter + drift, glyph + fl, form);
 
   vec2 clip = (pos / uRes) * 2.0 - 1.0;
   clip.y = -clip.y;
   gl_Position = vec4(clip, 0.0, 1.0);
 
-  // particles shrink a touch as the question fades back to black
-  gl_PointSize = mix(1.5, 2.5, form) * mix(0.8, 1.0, pb) * uDpr;
+  // small, soft points that shrink a touch as the question fades to black
+  gl_PointSize = mix(1.3, 2.0, form) * mix(0.7, 1.0, pb) * uDpr;
 
-  // colour: black -> deep chromatic mid-tone -> saturated hue
+  // colour: black -> deep chromatic mid-tone -> saturated hue (kept dim/soft)
   vec3 black = vec3(0.0);
-  vec3 mid   = aColor * 0.30 + vec3(0.015);
+  vec3 mid   = aColor * 0.28 + vec3(0.01);
   vec3 hue   = aColor;
   vec3 col   = pb < 0.5
       ? mix(black, mid, smoothstep(0.0, 0.5, pb))
       : mix(mid,   hue, smoothstep(0.5, 1.0, pb));
-  vColor = col * (0.55 + 0.45 * pb); // glow rises with saturation
+  vColor = col * (0.30 + 0.40 * pb); // dimmer, softer than before
 }
 `;
 
@@ -222,7 +224,7 @@ out vec4 outColor;
 void main(){
   vec2 c = gl_PointCoord - 0.5;
   float d = length(c);
-  float alpha = smoothstep(0.5, 0.04, d);
+  float alpha = smoothstep(0.5, 0.0, d) * 0.7; // soft, low-intensity grains
   outColor = vec4(vColor, alpha); // additive blend; black contributes nothing
 }
 `;
@@ -485,8 +487,8 @@ function build() {
   // spread so same-colour questions can fully separate, even on phones.
   const fscale = Math.min(
     1,
-    (usableW * 0.55) / maxW,
-    Math.sqrt((usableW * usableH * 0.5) / areaSum)
+    (usableW * 0.62) / maxW,
+    Math.sqrt((usableW * usableH * 0.55) / areaSum)
   );
 
   // even but organic coverage (blue-noise), no obvious grid
@@ -668,10 +670,10 @@ function frame(now) {
     tctx.save();
     // align the wavy run's bbox center onto the question center (matches particles)
     tctx.translate(L.cx - L.bcx, L.cy - L.bcy);
-    tctx.font = `300 ${L.fontPx}px Inter, 'Helvetica Neue', Arial, sans-serif`;
+    tctx.font = `400 ${L.fontPx}px Inter, 'Helvetica Neue', Arial, sans-serif`;
     tctx.textAlign = 'left';
     tctx.textBaseline = 'alphabetic';
-    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.5).toFixed(3)})`;
+    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.82).toFixed(3)})`;
     for (const ch of L.chars) {
       tctx.save();
       tctx.translate(ch.x, ch.y);
@@ -709,7 +711,7 @@ if (document.fonts && document.fonts.load) {
   Promise.race([
     Promise.all([
       document.fonts.load(`300 ${FONT_PX}px Inter`),
-      document.fonts.load(`200 ${FONT_PX}px Inter`),
+      document.fonts.load(`400 ${FONT_PX}px Inter`),
     ]).then(() => document.fonts.ready),
     new Promise(res => setTimeout(res, 1500)), // fallback if offline
   ]).then(boot);
