@@ -189,11 +189,12 @@ void main(){
   float ny = noise(q + vec2(0.0, -t) + 31.4 + aSeed * 7.0);
   vec2 drift = (vec2(nx, ny) - 0.5) * 2.0 * 13.0 * (1.0 - form);
 
-  // persistent, slow float once formed, so the word feels alive and ethereal
-  // rather than a static grid of dots
+  // float ONLY while forming (ethereal drift-in); fades to zero once formed
+  // so particles settle exactly onto the glyph and the word is crystal clear
+  float settle = form * (1.0 - form) * 4.0;   // 0 at ends, peaks mid-formation
   float ms = uTime * 0.5;
   vec2 fl = (vec2(noise(q * 2.3 + ms + aSeed * 5.0),
-                  noise(q * 2.3 - ms + 9.0)) - 0.5) * 2.0 * 2.8 * form;
+                  noise(q * 2.3 - ms + 9.0)) - 0.5) * 2.0 * 3.0 * settle;
 
   // letterform target, gently shrunk toward the question center while fading
   vec2 glyph = mix(aCenter, aGlyph, scale);
@@ -673,7 +674,7 @@ function frame(now) {
     tctx.font = `400 ${L.fontPx}px Inter, 'Helvetica Neue', Arial, sans-serif`;
     tctx.textAlign = 'left';
     tctx.textBaseline = 'alphabetic';
-    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.82).toFixed(3)})`;
+    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(fade * 0.95).toFixed(3)})`;
     for (const ch of L.chars) {
       tctx.save();
       tctx.translate(ch.x, ch.y);
