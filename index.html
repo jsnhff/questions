@@ -423,12 +423,13 @@ function build() {
   const margin = MARGIN;
   const usableW = (1 - margin * 2) * W, usableH = (1 - margin * 2) * H;
 
-  // Pass A: measure at a raw font, then scale so the widest line fits and
-  // the boxes occupy a modest area (so same-colour questions can separate).
+  // Pass A: measure at the (uniform) base font, then scale so the widest
+  // line fits and the boxes occupy a modest area (so same-colour questions
+  // can separate). Every question uses the same size.
   let maxW = 1, areaSum = 0;
   const rawFont = new Float32Array(NQ);
   for (let i = 0; i < NQ; i++) {
-    const fp = FONT_PX + (Math.random() - 0.5) * 4;
+    const fp = FONT_PX;                       // uniform size for every question
     rawFont[i] = fp;
     tctx.font = fontStr(fp, 400);
     const w = tctx.measureText(QUESTIONS[i]).width;
