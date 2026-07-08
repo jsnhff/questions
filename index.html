@@ -439,15 +439,36 @@ const POOL = [
 
 const NQ = Math.min(50, POOL.length);
 
-// Draw a fresh random subset for this load (curated pool -> varied each visit).
-const QUESTIONS = (() => {
-  const a = POOL.slice();
+// Draw a fresh random subset (from whichever pool is active) for this load.
+function sampleQuestions(pool) {
+  const a = pool.slice();
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a.slice(0, NQ);
-})();
+}
+
+// Optional live pool: if questions.json is present (e.g. refreshed by a
+// scheduled generator and pushed to the repo), use it; otherwise fall back to
+// the inline POOL. Filled in by loadPool() before the first build.
+let QUESTIONS = sampleQuestions(POOL);
+
+async function loadPool() {
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch('questions.json?t=' + Date.now(), { cache: 'no-store', signal: ctrl.signal });
+    clearTimeout(to);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data)) return null;
+    const clean = data.filter(s => typeof s === 'string' && s.trim().length > 0).map(s => s.trim());
+    return clean.length >= NQ ? clean : null; // ignore too-small / malformed sets
+  } catch (e) {
+    return null; // offline / missing / bad JSON -> inline POOL
+  }
+}
 
 /* Palette (CSS rgb) */
 const PALETTE_CSS = [
@@ -752,7 +773,9 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(build, 200);
 });
 
-function boot() {
+async function boot() {
+  const pool = await loadPool();          // live questions.json, or null
+  if (pool) QUESTIONS = sampleQuestions(pool);
   build();
   startTime = performance.now();
   requestAnimationFrame(frame);
