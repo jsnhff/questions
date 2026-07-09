@@ -766,8 +766,11 @@ function randDormant() { return 70 + Math.random() * 120; }  // long rest, 70–
 
 // Advance the scheduler: retire finished questions, then admit waiting ones
 // up to the cap (longest-waiting first).
+const MAX_PER_COLOR = 2;         // never more than this many of one hue on screen
+
 function updateSchedule(time) {
   let activeCount = 0;
+  const perColor = new Array(NCOL).fill(0);
   for (let i = 0; i < NQ; i++) {
     const s = state[i];
     if (!s.active) continue;
@@ -776,7 +779,10 @@ function updateSchedule(time) {
       s.nextStart = time + randDormant();
       // return this question to the back of the deck
       if (layout[i] && layout[i].text) { deck.push(layout[i].text); layout[i].text = null; }
-    } else activeCount++;
+    } else {
+      activeCount++;
+      perColor[layout[i].cssIdx]++;
+    }
   }
   if (activeCount >= CAP) return;
   const elig = [];
@@ -787,10 +793,12 @@ function updateSchedule(time) {
   elig.sort((a, b) => state[a].nextStart - state[b].nextStart);
   for (let k = 0; k < elig.length && activeCount < CAP; k++) {
     const i = elig[k];
+    const col = layout[i].cssIdx;
+    if (perColor[col] >= MAX_PER_COLOR) continue; // avoid 3+ of a colour at once
     state[i].active = true; state[i].startT = time;
     state[i].activeDur = randActive(); state[i].ramp = randRamp();
     relayoutSlot(i, deckNext());   // deal a fresh question into this slot
-    activeCount++;
+    activeCount++; perColor[col]++;
   }
 }
 
