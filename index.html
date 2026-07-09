@@ -921,7 +921,7 @@ const BREEZE  = true;        // slow "fabric in a breeze" baseline drift — set
 const LOUPE_MAGNIFY = true;  // subtle glass magnification under the cursor — set false for just a ring
 
 const textCanvas = document.getElementById('text');
-const tctx = textCanvas.getContext('2d');
+const tctx = textCanvas.getContext('2d', { willReadFrequently: true });
 
 /* ----------------------- helpers ----------------------- */
 function fontStr(px, w) { return `${w} ${px}px Inter, 'Helvetica Neue', Arial, sans-serif`; }
@@ -1227,23 +1227,71 @@ window.addEventListener('blur', () => { mouse.inside = false; });
 
 function drawLoupe() {
   if (!mouse.inside) return;
-  const R = 44, mx = mouse.x, my = mouse.y;
+  const R = 30, mx = mouse.x, my = mouse.y;          // smaller loupe
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+  // region under the loupe (device pixels), clamped to the canvas
+  const bx = Math.max(0, Math.round((mx - R) * dpr));
+  const by = Math.max(0, Math.round((my - R) * dpr));
+  const bw = Math.min(textCanvas.width - bx, Math.round(2 * R * dpr));
+  const bh = Math.min(textCanvas.height - by, Math.round(2 * R * dpr));
+  if (bw <= 0 || bh <= 0) return;
+  let srcImg;
+  try { srcImg = tctx.getImageData(bx, by, bw, bh); } catch (e) { return; }
+  const src = srcImg.data;
+
+  // average colour under the loupe, so the rim can "catch" a hint of it
+  let cr = 0, cg = 0, cb = 0, cn = 0;
+  for (let i = 0; i < src.length; i += 4) {
+    if (src[i] + src[i + 1] + src[i + 2] > 40) { cr += src[i]; cg += src[i + 1]; cb += src[i + 2]; cn++; }
+  }
+  const rimCol = cn > 0 ? [Math.round(cr / cn), Math.round(cg / cn), Math.round(cb / cn)] : null;
+
   if (LOUPE_MAGNIFY) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const zoom = 1.16, src = R / zoom;               // gentle magnification
+    // A true, smooth lens: magnification is zoomC at the centre and eases to
+    // exactly 1x at the rim, so the edge blends seamlessly with the
+    // surroundings — no doubling, no banding. Per-pixel radial remap.
+    const zoomC = 1.32;
+    const cx = mx * dpr - bx, cy = my * dpr - by; // lens centre in local device px
+    const Rdev = R * dpr;
+    const out = tctx.createImageData(bw, bh);
+    const o = out.data;
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const dx = x - cx, dy = y - cy;
+        const rr = Math.sqrt(dx * dx + dy * dy);
+        let sx = x, sy = y;                          // outside lens: identity
+        if (rr < Rdev) {
+          const rn = rr / Rdev;                     // 0 centre .. 1 rim
+          const m = 1 + (zoomC - 1) * (1 - rn * rn); // zoomC -> 1 at rim
+          sx = (cx + dx / m) | 0;
+          sy = (cy + dy / m) | 0;
+          if (sx < 0) sx = 0; else if (sx >= bw) sx = bw - 1;
+          if (sy < 0) sy = 0; else if (sy >= bh) sy = bh - 1;
+        }
+        const si = (sy * bw + sx) << 2, di = (y * bw + x) << 2;
+        o[di] = src[si]; o[di + 1] = src[si + 1]; o[di + 2] = src[si + 2]; o[di + 3] = 255;
+      }
+    }
+    tctx.putImageData(out, bx, by); // identity outside the circle => seamless
+  }
+
+  // the rim catches ~10% of the colour underneath (additive), like glass
+  if (rimCol) {
     tctx.save();
-    tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2); tctx.clip();
-    tctx.drawImage(textCanvas,
-      (mx - src) * dpr, (my - src) * dpr, 2 * src * dpr, 2 * src * dpr,
-      mx - R, my - R, 2 * R, 2 * R);
+    tctx.globalCompositeOperation = 'lighter';
+    tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
+    tctx.lineWidth = 2.5;
+    tctx.strokeStyle = `rgba(${rimCol[0]},${rimCol[1]},${rimCol[2]},0.10)`;
+    tctx.stroke();
     tctx.restore();
   }
   // faint glass rim + a soft top-left highlight
   tctx.save();
   tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
-  tctx.lineWidth = 1; tctx.strokeStyle = 'rgba(255,255,255,0.28)'; tctx.stroke();
-  tctx.beginPath(); tctx.arc(mx, my, R - 1.2, Math.PI * 1.05, Math.PI * 1.62);
-  tctx.lineWidth = 1.5; tctx.strokeStyle = 'rgba(255,255,255,0.12)'; tctx.stroke();
+  tctx.lineWidth = 1; tctx.strokeStyle = 'rgba(255,255,255,0.20)'; tctx.stroke();
+  tctx.beginPath(); tctx.arc(mx, my, R - 1, Math.PI * 1.05, Math.PI * 1.62);
+  tctx.lineWidth = 1.2; tctx.strokeStyle = 'rgba(255,255,255,0.10)'; tctx.stroke();
   tctx.restore();
 }
 
