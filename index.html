@@ -1215,6 +1215,10 @@ function build() {
 
 /* ----------------------- loupe (glass cursor) ----------------------- */
 const mouse = { x: 0, y: 0, inside: false };
+// per-segment rim state so the colour catch is positional and eases in/out
+const RIM_N = 48;
+const rimGlow = new Float32Array(RIM_N);
+const rimColor = Array.from({ length: RIM_N }, () => [255, 255, 255]);
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') { mouse.inside = false; return; }
   mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true;
@@ -1239,21 +1243,14 @@ function drawLoupe() {
   let srcImg;
   try { srcImg = tctx.getImageData(bx, by, bw, bh); } catch (e) { return; }
   const src = srcImg.data;
-
-  // average colour under the loupe, so the rim can "catch" a hint of it
-  let cr = 0, cg = 0, cb = 0, cn = 0;
-  for (let i = 0; i < src.length; i += 4) {
-    if (src[i] + src[i + 1] + src[i + 2] > 40) { cr += src[i]; cg += src[i + 1]; cb += src[i + 2]; cn++; }
-  }
-  const rimCol = cn > 0 ? [Math.round(cr / cn), Math.round(cg / cn), Math.round(cb / cn)] : null;
+  const cx = mx * dpr - bx, cy = my * dpr - by; // loupe centre in local device px
+  const Rdev = R * dpr;
 
   if (LOUPE_MAGNIFY) {
     // A true, smooth lens: magnification is zoomC at the centre and eases to
     // exactly 1x at the rim, so the edge blends seamlessly with the
     // surroundings — no doubling, no banding. Per-pixel radial remap.
     const zoomC = 1.32;
-    const cx = mx * dpr - bx, cy = my * dpr - by; // lens centre in local device px
-    const Rdev = R * dpr;
     const out = tctx.createImageData(bw, bh);
     const o = out.data;
     for (let y = 0; y < bh; y++) {
@@ -1276,16 +1273,37 @@ function drawLoupe() {
     tctx.putImageData(out, bx, by); // identity outside the circle => seamless
   }
 
-  // the rim catches ~10% of the colour underneath (additive), like glass
-  if (rimCol) {
-    tctx.save();
-    tctx.globalCompositeOperation = 'lighter';
-    tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
-    tctx.lineWidth = 2.5;
-    tctx.strokeStyle = `rgba(${rimCol[0]},${rimCol[1]},${rimCol[2]},0.10)`;
-    tctx.stroke();
-    tctx.restore();
+  // Positional colour catch: each segment of the rim picks up the colour
+  // directly under it, easing in and out over time for a soft, glassy fade.
+  for (let k = 0; k < RIM_N; k++) {
+    const a = (k / RIM_N) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+    let r = 0, g = 0, bl = 0, n = 0;
+    for (const rr of [0.7, 0.86]) {          // sample just inside the rim
+      const px = (cx + Rdev * rr * ca) | 0, py = (cy + Rdev * rr * sa) | 0;
+      if (px >= 0 && px < bw && py >= 0 && py < bh) {
+        const i = (py * bw + px) << 2; r += src[i]; g += src[i + 1]; bl += src[i + 2]; n++;
+      }
+    }
+    let target = 0;
+    if (n > 0) {
+      r /= n; g /= n; bl /= n;
+      const bright = r + g + bl;
+      target = Math.max(0, Math.min(1, (bright - 30) / 260));
+      if (bright > 30) rimColor[k] = [Math.round(r), Math.round(g), Math.round(bl)];
+    }
+    rimGlow[k] += (target - rimGlow[k]) * 0.05; // slow ease in AND out
   }
+  const grad = tctx.createConicGradient(0, mx, my);
+  for (let k = 0; k <= RIM_N; k++) {
+    const kk = k % RIM_N, c = rimColor[kk];
+    grad.addColorStop(k / RIM_N, `rgba(${c[0]},${c[1]},${c[2]},${(rimGlow[kk] * 0.16).toFixed(3)})`);
+  }
+  tctx.save();
+  tctx.globalCompositeOperation = 'lighter';
+  tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
+  tctx.lineWidth = 2.5; tctx.strokeStyle = grad; tctx.stroke();
+  tctx.restore();
+
   // faint glass rim + a soft top-left highlight
   tctx.save();
   tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
