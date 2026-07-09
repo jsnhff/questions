@@ -13,7 +13,9 @@
 <style>
   html, body {
     margin: 0; padding: 0; width: 100%; height: 100%;
-    background: #000; overflow: hidden; cursor: none;
+    background: #000; overflow: hidden;
+    /* a subtle translucent loupe instead of the OS pointer */
+    cursor: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='36'%20height='36'%3E%3Ccircle%20cx='18'%20cy='18'%20r='12'%20fill='%23ffffff'%20fill-opacity='0.05'%20stroke='%23ffffff'%20stroke-opacity='0.35'%20stroke-width='1'/%3E%3C/svg%3E") 18 18, none;
   }
   #stage { position: fixed; inset: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -824,9 +826,38 @@ const POOL = [
   "Can I hold it all?",
   "Will I be enough for them?",
   "Is the fear trying to protect me?",
+  "Why is there something instead of nothing?",
+  "How much can I drink without hurting myself?",
+  "Should I let everything just happen to me?",
+  "Do I have to understand everything myself?",
+  "If no one remembers it, did the day still happen?",
+  "Am I the same person I was when I started asking?",
+  "What is the difference between waiting and hoping?",
+  "Is everyone else also making it up as they go?",
+  "Would I recognize happiness if it sat beside me?",
+  "When did the future stop feeling like it was coming?",
+  "Is there a word for missing a place I have not been?",
+  "What would I do if I knew it would turn out okay?",
+  "Does the sea remember every ship that crossed it?",
+  "Is it the same moon my grandmother looked at?",
+  "How do you thank someone who will never know?",
+  "What if the point was the wandering all along?",
+  "How many versions of this moment did I not choose?",
+  "Does the universe notice when I hold my breath?",
+  "Will I be forgiven for the things I never said?",
+  "Are the poor really good and the rich really evil?",
+  "Is the person I pretend to be tired of pretending?",
+  "What am I saving all my questions for?",
 ];
 
 const NQ = Math.min(50, POOL.length); // number of position slots on screen
+
+// Longer questions are a wide-screen treat: they'd shrink the whole field on a
+// phone, so we only deal them when there's room.
+const SHORT_MAX = 40;           // everyday length
+const LONG_MAX = 56;            // longest "treat" length
+const WIDE_THRESHOLD = 800;     // css px; below this, skip the long ones
+function allowLong() { return window.innerWidth >= WIDE_THRESHOLD; }
 
 // Active pool: the inline POOL, or a live questions.json if present.
 let activePool = POOL;
@@ -843,6 +874,14 @@ function refillDeck() {
   }
 }
 function deckNext() {
+  const long = allowLong();
+  // On narrow screens, skip long questions (rotate them to the back, unshown).
+  for (let tries = 0; tries < deck.length; tries++) {
+    if (deck.length === 0) refillDeck();
+    const q = deck.shift();
+    if (!long && q.length > SHORT_MAX) { deck.push(q); continue; }
+    return q;
+  }
   if (deck.length === 0) refillDeck();
   return deck.shift();
 }
@@ -1082,23 +1121,31 @@ function build() {
   const margin = MARGIN;
   const usableW = (1 - margin * 2) * W, usableH = (1 - margin * 2) * H;
 
-  // Uniform font, sized to the whole pool (text is dealt at runtime): the
-  // widest question must fit, and the field shouldn't be too dense.
-  let maxW = 1, sumW = 0;
+  // Uniform font. Size it to the NORMAL (short) questions so an occasional
+  // long one doesn't shrink the whole field — long ones just run wider (and
+  // only appear on wide screens). maxDealW covers whatever can be dealt here,
+  // for same-colour separation and the on-screen clamp.
+  const long = allowLong();
+  let maxNormalW = 1, maxDealW = 1, sumW = 0, cnt = 0;
   tctx.font = fontStr(FONT_PX, 400);
   for (const q of activePool) {
+    if (q.length > LONG_MAX) continue;
+    const dealable = long || q.length <= SHORT_MAX;
+    if (!dealable) continue;
     const w = tctx.measureText(q).width;
-    if (w > maxW) maxW = w;
-    sumW += w;
+    if (q.length <= SHORT_MAX && w > maxNormalW) maxNormalW = w;
+    if (w > maxDealW) maxDealW = w;
+    sumW += w; cnt++;
   }
-  const avgW = sumW / Math.max(1, activePool.length);
+  const avgW = sumW / Math.max(1, cnt);
   const areaSum = NQ * (avgW + FONT_PX) * (FONT_PX * 1.9);
   const fscale = Math.min(
     1,
-    (usableW * 0.62) / maxW,
+    (usableW * 0.62) / maxNormalW,           // fit the normal questions
     Math.sqrt((usableW * usableH * 0.55) / areaSum)
   );
   const fontPx = FONT_PX * fscale;
+  const maxW = maxDealW;                       // widest question that can appear
 
   // half-extents: MAX (widest text) drives same-colour separation; NOMINAL
   // (avg text) drives lenient different-colour spacing and base placement.
