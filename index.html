@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Question Field</title>
+<title>will happiness find me?</title>
+<meta name="author" content="Jason Huff" />
+<meta name="description" content="A questions project. After Fischli &amp; Weiss." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet" />
@@ -17,6 +19,12 @@
 </style>
 </head>
 <body>
+<!--
+  willhappinessfind.me (2026)
+  After Peter Fischli & David Weiss, "Will Happiness Find Me?"
+  Form after Rafaël Rozendaal, "Art Website Sales Contract" (2011)
+  Website, dimensions variable, duration infinite
+-->
 <div id="stage">
   <canvas id="text"></canvas>
 </div>
@@ -597,6 +605,85 @@ const POOL = [
   "Is past me to blame?",
   "Are we the same person?",
   "Is it brave to begin?",
+  "How long is the Nile?",
+  "How deep is the ocean?",
+  "How many stars are there?",
+  "How far is the sun?",
+  "How old is the light?",
+  "How fast is the earth spinning?",
+  "How much does a cloud weigh?",
+  "How many words do I know?",
+  "How many breaths are left?",
+  "How many people are dreaming now?",
+  "How heavy is the sky?",
+  "How thick is the ice?",
+  "How far can sound travel?",
+  "How many cells am I?",
+  "How long until the sun dies?",
+  "How wide is a thought?",
+  "How deep can I dig?",
+  "How high is up?",
+  "How small is an atom?",
+  "How many doors have I closed?",
+  "Do aliens hide in the yogurt?",
+  "Does the fridge sing when I leave?",
+  "Do numbers dream?",
+  "Do clouds gossip?",
+  "Is the cat plotting?",
+  "Do the spoons rearrange themselves?",
+  "Does the toaster have opinions?",
+  "Is my houseplant judging me?",
+  "Do socks conspire?",
+  "Is gravity optional on Sundays?",
+  "Do mirrors keep copies?",
+  "Does the moon owe us anything?",
+  "Are shadows just tired light?",
+  "Do doorknobs remember hands?",
+  "Is my shadow taller at night?",
+  "Do fish get thirsty?",
+  "Does the sun tan?",
+  "Is the sea just crying?",
+  "Do the stars blink on purpose?",
+  "Does the dark have a bottom?",
+  "Do souls wander?",
+  "Where does the self end?",
+  "Is now the only real thing?",
+  "Is the world dreaming me?",
+  "What was before before?",
+  "Where is yesterday now?",
+  "Does time have edges?",
+  "Is death a door?",
+  "Do we borrow our atoms?",
+  "Is consciousness a rumor?",
+  "Are we made of questions?",
+  "Does meaning need a witness?",
+  "Is the universe aware?",
+  "Is forever a place?",
+  "Do we choose our thoughts?",
+  "Is free will a story?",
+  "Where do the dead keep names?",
+  "Is silence the first word?",
+  "Does the void get lonely?",
+  "Is nothing something?",
+  "Am I loved?",
+  "Will I be missed?",
+  "Do they think of me?",
+  "Am I enough as I am?",
+  "Have I wasted my gifts?",
+  "Will I run out of chances?",
+  "Did I love well?",
+  "Am I forgiven?",
+  "Do I forgive myself?",
+  "Was I ever really here?",
+  "Is anyone keeping track?",
+  "Will the world remember rain?",
+  "Does the clock feel each second?",
+  "Is the horizon a promise?",
+  "Do questions want answers?",
+  "Is asking its own answer?",
+  "What holds it all together?",
+  "Is the ground sure of itself?",
+  "Does the river fear the sea?",
 ];
 
 const NQ = Math.min(50, POOL.length); // number of position slots on screen
@@ -755,13 +842,15 @@ const order = shuffle(Array.from({ length: NQ }, (_, i) => i));
 const state = new Array(NQ);
 order.forEach((qi, rank) => {
   state[qi] = {
-    active: false, startT: 0, activeDur: 0, ramp: 0,
+    active: false, startT: 0, activeDur: 0, rampIn: 0, rampOut: 0,
     nextStart: 0.2 + rank * INTRO_GAP,   // first appearance (gentle intro)
   };
 });
 
 function randActive()  { return 18 + Math.random() * 16; }   // 18–34s visible
-function randRamp()    { return 3 + Math.random() * 2.5; }   // fade in/out time
+// After Fischli/Weiss: questions "slowly appear and quickly fade".
+function randRampIn()  { return 4.5 + Math.random() * 3; }   // slow materialize (4.5–7.5s)
+function randRampOut() { return 1 + Math.random() * 1; }     // quick fade-out (1–2s)
 function randDormant() { return 70 + Math.random() * 120; }  // long rest, 70–190s
 
 // Advance the scheduler: retire finished questions, then admit waiting ones
@@ -796,22 +885,24 @@ function updateSchedule(time) {
     const col = layout[i].cssIdx;
     if (perColor[col] >= MAX_PER_COLOR) continue; // avoid 3+ of a colour at once
     state[i].active = true; state[i].startT = time;
-    state[i].activeDur = randActive(); state[i].ramp = randRamp();
+    state[i].activeDur = randActive();
+    state[i].rampIn = randRampIn(); state[i].rampOut = randRampOut();
     relayoutSlot(i, deckNext());   // deal a fresh question into this slot
     activeCount++; perColor[col]++;
   }
 }
 
-// brightness 0..1 for question i (eased fade up from black & back down)
+// brightness 0..1 for question i — slow fade up from black, quick fade back.
 function brightAt(i, time) {
   const s = state[i];
   if (!s.active) return 0;
   const local = time - s.startT;
-  const ramp = Math.min(s.ramp, s.activeDur * 0.45);
+  const rIn = Math.min(s.rampIn, s.activeDur * 0.6);
+  const rOut = Math.min(s.rampOut, s.activeDur - rIn);
   let a;
-  if (local < ramp) a = local / ramp;                        // fade from black
-  else if (local < s.activeDur - ramp) a = 1;                // hold (crisp)
-  else a = (s.activeDur - local) / ramp;                     // fade to black
+  if (local < rIn) a = local / rIn;                          // slow materialize
+  else if (local < s.activeDur - rOut) a = 1;                // hold (crisp)
+  else a = (s.activeDur - local) / rOut;                     // quick fade to black
   return easeInOutCubic(Math.max(0, Math.min(1, a)));
 }
 
