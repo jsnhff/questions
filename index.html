@@ -14,8 +14,7 @@
   html, body {
     margin: 0; padding: 0; width: 100%; height: 100%;
     background: #000; overflow: hidden;
-    /* a subtle translucent loupe instead of the OS pointer */
-    cursor: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='36'%20height='36'%3E%3Ccircle%20cx='18'%20cy='18'%20r='12'%20fill='%23ffffff'%20fill-opacity='0.05'%20stroke='%23ffffff'%20stroke-opacity='0.35'%20stroke-width='1'/%3E%3C/svg%3E") 18 18, none;
+    cursor: none; /* the loupe (drawn on the canvas) is the pointer */
   }
   #stage { position: fixed; inset: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -918,6 +917,8 @@ const NCOL = PALETTE_CSS.length;
 /* Tunables */
 const FONT_PX = 18;          // base glyph height; scaled to fit the viewport
 const MARGIN  = 0.05;
+const BREEZE  = true;        // slow "fabric in a breeze" baseline drift — set false to disable
+const LOUPE_MAGNIFY = true;  // subtle glass magnification under the cursor — set false for just a ring
 
 const textCanvas = document.getElementById('text');
 const tctx = textCanvas.getContext('2d');
@@ -993,11 +994,12 @@ function layoutChars(text, fontPx, wave, tilt) {
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
   for (const ch of text) {
     const w = tctx.measureText(ch).width;
+    // store the pre-wave advance (ax); the wave/tilt are re-applied per frame
+    // in the renderer so the baseline can drift slowly, like fabric.
     const yy = wave.amp * Math.sin(x * wave.freq + wave.phase);
-    const wr = Math.atan(wave.amp * wave.freq * Math.cos(x * wave.freq + wave.phase));
     const X = x * ct - yy * st;
     const Y = x * st + yy * ct;
-    chars.push({ ch, x: X, y: Y, rot: wr + tilt });
+    chars.push({ ch, ax: x });
     if (X < minx) minx = X; if (X > maxx) maxx = X;
     if (Y < miny) miny = Y; if (Y > maxy) maxy = Y;
     x += w;
@@ -1101,6 +1103,10 @@ function relayoutSlot(i, text) {
   const tilt = (Math.random() < 0.5 ? -1 : 1) * (5 + Math.random() * 7) * Math.PI / 180;
   const lay = layoutChars(text, fontPx, wave, tilt);
   L.chars = lay.chars;
+  L.wave = wave; L.tilt = tilt;
+  // very slow, faintly random baseline drift — a scarf in a breeze.
+  // BREEZE=false => drift 0 => the baseline is static, exactly as before.
+  L.drift = BREEZE ? (0.028 + Math.random() * 0.03) * (Math.random() < 0.5 ? -1 : 1) : 0;
   L.bcx = (lay.minx + lay.maxx) * 0.5;
   L.bcy = (lay.miny + lay.maxy) * 0.5 - fontPx * 0.32; // center the ink, not the baseline
   L.text = text;
@@ -1207,6 +1213,40 @@ function build() {
   }
 }
 
+/* ----------------------- loupe (glass cursor) ----------------------- */
+const mouse = { x: 0, y: 0, inside: false };
+window.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') { mouse.inside = false; return; }
+  mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true;
+});
+window.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') { mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true; }
+});
+document.addEventListener('mouseleave', () => { mouse.inside = false; });
+window.addEventListener('blur', () => { mouse.inside = false; });
+
+function drawLoupe() {
+  if (!mouse.inside) return;
+  const R = 44, mx = mouse.x, my = mouse.y;
+  if (LOUPE_MAGNIFY) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const zoom = 1.16, src = R / zoom;               // gentle magnification
+    tctx.save();
+    tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2); tctx.clip();
+    tctx.drawImage(textCanvas,
+      (mx - src) * dpr, (my - src) * dpr, 2 * src * dpr, 2 * src * dpr,
+      mx - R, my - R, 2 * R, 2 * R);
+    tctx.restore();
+  }
+  // faint glass rim + a soft top-left highlight
+  tctx.save();
+  tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
+  tctx.lineWidth = 1; tctx.strokeStyle = 'rgba(255,255,255,0.28)'; tctx.stroke();
+  tctx.beginPath(); tctx.arc(mx, my, R - 1.2, Math.PI * 1.05, Math.PI * 1.62);
+  tctx.lineWidth = 1.5; tctx.strokeStyle = 'rgba(255,255,255,0.12)'; tctx.stroke();
+  tctx.restore();
+}
+
 /* ----------------------- render ----------------------- */
 let startTime = 0;
 
@@ -1227,20 +1267,28 @@ function frame(now) {
     const L = layout[i];
     if (!L.chars.length) continue;
     const c = PALETTE_CSS[L.cssIdx];
+    // slowly drift the wave phase while the question is up (fabric in a breeze)
+    const w = L.wave, ct = Math.cos(L.tilt), st = Math.sin(L.tilt);
+    const dphase = (time - state[i].startT) * L.drift;
     tctx.save();
     tctx.translate(L.rcx - L.bcx, L.rcy - L.bcy);
     tctx.font = fontStr(L.fontPx, 400);
     tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${b.toFixed(3)})`; // black -> colour -> black
     for (const ch of L.chars) {
+      const p = ch.ax * w.freq + w.phase + dphase;
+      const yy = w.amp * Math.sin(p);
+      const rot = Math.atan(w.amp * w.freq * Math.cos(p)) + L.tilt;
       tctx.save();
-      tctx.translate(ch.x, ch.y);
-      tctx.rotate(ch.rot);
+      tctx.translate(ch.ax * ct - yy * st, ch.ax * st + yy * ct);
+      tctx.rotate(rot);
       tctx.fillText(ch.ch, 0, 0);
       tctx.restore();
     }
     tctx.restore();
   }
   tctx.globalCompositeOperation = 'source-over';
+
+  drawLoupe();
 
   requestAnimationFrame(frame);
 }
