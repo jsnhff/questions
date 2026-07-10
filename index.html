@@ -1274,14 +1274,19 @@ function drawLoupe() {
           if (y1 < 0) y1 = 0; else if (y1 > bhm) y1 = bhm;
           const i00 = (y0 * bw + x0) << 2, i10 = (y0 * bw + x1) << 2;
           const i01 = (y1 * bw + x0) << 2, i11 = (y1 * bw + x1) << 2;
-          const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty),
-                w01 = (1 - tx) * ty,       w11 = tx * ty;
+          // weight by each source alpha so a fading question stays faint when
+          // magnified (the canvas stores full colour + low alpha).
+          const w00 = (1 - tx) * (1 - ty) * src[i00 + 3] / 255;
+          const w10 = tx * (1 - ty) * src[i10 + 3] / 255;
+          const w01 = (1 - tx) * ty * src[i01 + 3] / 255;
+          const w11 = tx * ty * src[i11 + 3] / 255;
           o[di]     = (src[i00]     * w00 + src[i10]     * w10 + src[i01]     * w01 + src[i11]     * w11) | 0;
           o[di + 1] = (src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11) | 0;
           o[di + 2] = (src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11) | 0;
           o[di + 3] = 255;
-        } else {                                       // outside lens: identity
-          o[di] = src[di]; o[di + 1] = src[di + 1]; o[di + 2] = src[di + 2]; o[di + 3] = 255;
+        } else {                                       // outside lens: identity (baked)
+          const a = src[di + 3] / 255;
+          o[di] = src[di] * a | 0; o[di + 1] = src[di + 1] * a | 0; o[di + 2] = src[di + 2] * a | 0; o[di + 3] = 255;
         }
       }
     }
@@ -1293,30 +1298,35 @@ function drawLoupe() {
   for (let k = 0; k < RIM_N; k++) {
     const a = (k / RIM_N) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
     let r = 0, g = 0, bl = 0, n = 0;
-    for (const rr of [0.7, 0.86]) {          // sample just inside the rim
+    for (const rr of [0.62, 0.78, 0.92]) {   // sample a few points across the rim
       const px = (cx + Rdev * rr * ca) | 0, py = (cy + Rdev * rr * sa) | 0;
       if (px >= 0 && px < bw && py >= 0 && py < bh) {
-        const i = (py * bw + px) << 2; r += src[i]; g += src[i + 1]; bl += src[i + 2]; n++;
+        const i = (py * bw + px) << 2, af = src[i + 3] / 255; // bake fade into the sample
+        r += src[i] * af; g += src[i + 1] * af; bl += src[i + 2] * af; n++;
       }
     }
     let target = 0;
     if (n > 0) {
       r /= n; g /= n; bl /= n;
       const bright = r + g + bl;
-      target = Math.max(0, Math.min(1, (bright - 30) / 260));
-      if (bright > 30) rimColor[k] = [Math.round(r), Math.round(g), Math.round(bl)];
+      target = Math.max(0, Math.min(1, (bright - 12) / 200));
+      if (bright > 12) rimColor[k] = [Math.round(r), Math.round(g), Math.round(bl)];
     }
-    rimGlow[k] += (target - rimGlow[k]) * 0.05; // slow ease in AND out
+    rimGlow[k] += (target - rimGlow[k]) * 0.08; // ease in AND out
   }
   const grad = tctx.createConicGradient(0, mx, my);
   for (let k = 0; k <= RIM_N; k++) {
     const kk = k % RIM_N, c = rimColor[kk];
-    grad.addColorStop(k / RIM_N, `rgba(${c[0]},${c[1]},${c[2]},${(rimGlow[kk] * 0.16).toFixed(3)})`);
+    // brighten the caught hue so the glow reads, still scaled by the fade
+    const glow = rimGlow[kk];
+    const boost = 1.5;
+    grad.addColorStop(k / RIM_N,
+      `rgba(${Math.min(255, c[0] * boost) | 0},${Math.min(255, c[1] * boost) | 0},${Math.min(255, c[2] * boost) | 0},${(glow * 0.5).toFixed(3)})`);
   }
   tctx.save();
   tctx.globalCompositeOperation = 'lighter';
   tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
-  tctx.lineWidth = 2.5; tctx.strokeStyle = grad; tctx.stroke();
+  tctx.lineWidth = 3.5; tctx.strokeStyle = grad; tctx.stroke();
   tctx.restore();
 
   // faint glass rim + a soft top-left highlight
