@@ -1351,8 +1351,17 @@ function drawLoupe() {
 
 /* ----------------------- render ----------------------- */
 let startTime = 0;
+let lastFrame = 0;
 
 function frame(now) {
+  // When Safari (or any browser) backgrounds the tab, requestAnimationFrame
+  // pauses while performance.now() keeps counting real time. On return, `now`
+  // has jumped ahead by the whole away period. Left unchecked, one frame would
+  // expire every active question and mark every dormant one "due," slamming the
+  // field to its cap all at once with a synchronized batch. Freeze the clock
+  // across any long gap so the piece resumes exactly where it left off.
+  if (lastFrame && now - lastFrame > 500) startTime += now - lastFrame;
+  lastFrame = now;
   const time = (now - startTime) / 1000;
   const W = window.innerWidth, H = window.innerHeight;
 
