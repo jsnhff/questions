@@ -1003,7 +1003,13 @@ function layoutChars(text, fontPx, wave, tilt) {
     chars.push({ ch, ax: x });
     if (X < minx) minx = X; if (X > maxx) maxx = X;
     if (Y < miny) miny = Y; if (Y > maxy) maxy = Y;
-    x += w;
+    // Advance along the CURVE, not flat. Each glyph is drawn rotated to the
+    // local baseline tangent, so a flat step of w would drop the next origin
+    // w·sqrt(1+slope^2) away along the curve, opening a gap on steep/rounded
+    // sections (most visible at the leading letter). Shrink the horizontal
+    // step so consecutive origins stay ~w apart measured along the baseline.
+    const slope = wave.amp * wave.freq * Math.cos(x * wave.freq + wave.phase);
+    x += w / Math.sqrt(1 + slope * slope);
   }
   return { chars, width: x, minx, maxx, miny, maxy };
 }
