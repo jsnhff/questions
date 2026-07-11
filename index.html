@@ -997,9 +997,18 @@ function layoutChars(text, fontPx, wave, tilt) {
   const ct = Math.cos(tilt), st = Math.sin(tilt);
   let x = 0;
   const chars = [];
+  const glyphs = Array.from(text); // split on code points, not UTF-16 units
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
-  for (const ch of text) {
-    const w = tctx.measureText(ch).width;
+  for (let gi = 0; gi < glyphs.length; gi++) {
+    const ch = glyphs[gi];
+    let w = tctx.measureText(ch).width;
+    // Glyphs are placed one at a time, so the font's pair kerning is lost —
+    // "W", "V", "T" etc. sit too far from the letter after them. Fold the kern
+    // for this pair back into the advance so e.g. "Wh" tucks in as intended.
+    if (gi + 1 < glyphs.length) {
+      const next = glyphs[gi + 1];
+      w += tctx.measureText(ch + next).width - w - tctx.measureText(next).width;
+    }
     // store the pre-wave advance (ax); the wave/tilt are re-applied per frame
     // in the renderer so the baseline can drift slowly, like fabric.
     const yy = wave.amp * Math.sin(x * wave.freq + wave.phase);
