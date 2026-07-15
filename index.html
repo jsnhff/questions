@@ -925,9 +925,20 @@ const FONT_PX = 18;          // base glyph height; scaled to fit the viewport
 const MARGIN  = 0.05;
 const BREEZE  = true;        // slow "fabric in a breeze" baseline drift — set false to disable
 const LOUPE_MAGNIFY = true;  // subtle glass magnification under the cursor — set false for just a ring
+const LOUPE_SS = 3;          // supersample factor for the loupe's crisp vector buffer
+const LOUPE_GAMMA = 2.0;     // >1 suppresses fading questions in the loupe so it reveals the crisp, present ones
 
 const textCanvas = document.getElementById('text');
 const tctx = textCanvas.getContext('2d', { willReadFrequently: true });
+// Offscreen buffer: the area under the loupe, re-rendered from the vector text
+// at LOUPE_SS resolution so the magnifier samples crisp glyphs, not the coarser
+// main-canvas pixels.
+const loupeCanvas = document.createElement('canvas');
+const lctx = loupeCanvas.getContext('2d', { willReadFrequently: true });
+// alpha (0..255) -> pow(alpha/255, LOUPE_GAMMA), precomputed so the loupe's
+// fade-suppression is a table lookup, not a pow() per sampled pixel.
+const gammaLUT = new Float32Array(256);
+for (let _v = 0; _v < 256; _v++) gammaLUT[_v] = Math.pow(_v / 255, LOUPE_GAMMA);
 
 /* ----------------------- helpers ----------------------- */
 function fontStr(px, w) { return `${w} ${px}px Inter, 'Helvetica Neue', Arial, sans-serif`; }
@@ -1250,7 +1261,7 @@ window.addEventListener('pointerdown', (e) => {
 document.addEventListener('mouseleave', () => { mouse.inside = false; });
 window.addEventListener('blur', () => { mouse.inside = false; });
 
-function drawLoupe() {
+function drawLoupe(time) {
   if (!mouse.inside) return;
   const R = 30, mx = mouse.x, my = mouse.y;          // smaller loupe
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -1268,46 +1279,60 @@ function drawLoupe() {
   const Rdev = R * dpr;
 
   if (LOUPE_MAGNIFY) {
+    // Re-render the area under the loupe straight from the vector text into a
+    // supersampled buffer, so the magnifier samples crisp glyphs instead of the
+    // coarser main-canvas pixels — no pixelation. The buffer spans the world
+    // square [mx-R, mx+R] x [my-R, my+R] at LOUPE_SS px per CSS px.
+    const SS = LOUPE_SS, S = Math.round(2 * R * SS), Sm = S - 1;
+    if (loupeCanvas.width !== S) { loupeCanvas.width = S; loupeCanvas.height = S; }
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.clearRect(0, 0, S, S);
+    lctx.setTransform(SS, 0, 0, SS, -(mx - R) * SS, -(my - R) * SS);
+    renderQuestions(lctx, time);
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    const buf = lctx.getImageData(0, 0, S, S).data;
+
     // A true, smooth lens: magnification is zoomC at the centre and eases to
     // exactly 1x at the rim, so the edge blends seamlessly with the
-    // surroundings — no doubling, no banding. Per-pixel radial remap with
-    // BILINEAR sampling, so the magnified text is smooth, not pixelated.
+    // surroundings — no doubling, no banding.
     const zoomC = 1.32;
-    const bwm = bw - 1, bhm = bh - 1;
     const out = tctx.createImageData(bw, bh);
     const o = out.data;
     for (let y = 0; y < bh; y++) {
       for (let x = 0; x < bw; x++) {
         const di = (y * bw + x) << 2;
-        const dx = x - cx, dy = y - cy;
-        const rr = Math.sqrt(dx * dx + dy * dy);
-        if (rr < Rdev) {
-          const rn = rr / Rdev;                       // 0 centre .. 1 rim
+        // this device pixel in world (CSS) coords, then radial magnification
+        const wx = (bx + x) / dpr, wy = (by + y) / dpr;
+        const dxc = wx - mx, dyc = wy - my;
+        const rr = Math.sqrt(dxc * dxc + dyc * dyc);
+        let sx, sy;
+        if (rr < R) {
+          const rn = rr / R;                          // 0 centre .. 1 rim
           const m = 1 + (zoomC - 1) * (1 - rn * rn);  // zoomC -> 1 at rim
-          const fx = cx + dx / m, fy = cy + dy / m;   // fractional source pos
-          let x0 = Math.floor(fx), y0 = Math.floor(fy);
-          const tx = fx - x0, ty = fy - y0;
-          let x1 = x0 + 1, y1 = y0 + 1;
-          if (x0 < 0) x0 = 0; else if (x0 > bwm) x0 = bwm;
-          if (x1 < 0) x1 = 0; else if (x1 > bwm) x1 = bwm;
-          if (y0 < 0) y0 = 0; else if (y0 > bhm) y0 = bhm;
-          if (y1 < 0) y1 = 0; else if (y1 > bhm) y1 = bhm;
-          const i00 = (y0 * bw + x0) << 2, i10 = (y0 * bw + x1) << 2;
-          const i01 = (y1 * bw + x0) << 2, i11 = (y1 * bw + x1) << 2;
-          // weight by each source alpha so a fading question stays faint when
-          // magnified (the canvas stores full colour + low alpha).
-          const w00 = (1 - tx) * (1 - ty) * src[i00 + 3] / 255;
-          const w10 = tx * (1 - ty) * src[i10 + 3] / 255;
-          const w01 = (1 - tx) * ty * src[i01 + 3] / 255;
-          const w11 = tx * ty * src[i11 + 3] / 255;
-          o[di]     = (src[i00]     * w00 + src[i10]     * w10 + src[i01]     * w01 + src[i11]     * w11) | 0;
-          o[di + 1] = (src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11) | 0;
-          o[di + 2] = (src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11) | 0;
-          o[di + 3] = 255;
-        } else {                                       // outside lens: identity (baked)
-          const a = src[di + 3] / 255;
-          o[di] = src[di] * a | 0; o[di + 1] = src[di + 1] * a | 0; o[di + 2] = src[di + 2] * a | 0; o[di + 3] = 255;
-        }
+          sx = mx + dxc / m; sy = my + dyc / m;
+        } else { sx = wx; sy = wy; }                  // outside lens: identity
+        // sample the supersampled buffer (bilinear, premultiplied) at that point
+        const fx = (sx - (mx - R)) * SS, fy = (sy - (my - R)) * SS;
+        let x0 = Math.floor(fx), y0 = Math.floor(fy);
+        const tx = fx - x0, ty = fy - y0;
+        let x1 = x0 + 1, y1 = y0 + 1;
+        if (x0 < 0) x0 = 0; else if (x0 > Sm) x0 = Sm;
+        if (x1 < 0) x1 = 0; else if (x1 > Sm) x1 = Sm;
+        if (y0 < 0) y0 = 0; else if (y0 > Sm) y0 = Sm;
+        if (y1 < 0) y1 = 0; else if (y1 > Sm) y1 = Sm;
+        const i00 = (y0 * S + x0) << 2, i10 = (y0 * S + x1) << 2;
+        const i01 = (y1 * S + x0) << 2, i11 = (y1 * S + x1) << 2;
+        // Weight each sample by pow(alpha, gamma): bakes the fade into colour
+        // AND suppresses partly-faded questions, so the loupe reveals the crisp,
+        // fully-present ones rather than showing everything at full strength.
+        const w00 = gammaLUT[buf[i00 + 3]] * (1 - tx) * (1 - ty);
+        const w10 = gammaLUT[buf[i10 + 3]] * tx * (1 - ty);
+        const w01 = gammaLUT[buf[i01 + 3]] * (1 - tx) * ty;
+        const w11 = gammaLUT[buf[i11 + 3]] * tx * ty;
+        o[di]     = (buf[i00]     * w00 + buf[i10]     * w10 + buf[i01]     * w01 + buf[i11]     * w11) | 0;
+        o[di + 1] = (buf[i00 + 1] * w00 + buf[i10 + 1] * w10 + buf[i01 + 1] * w01 + buf[i11 + 1] * w11) | 0;
+        o[di + 2] = (buf[i00 + 2] * w00 + buf[i10 + 2] * w10 + buf[i01 + 2] * w01 + buf[i11 + 2] * w11) | 0;
+        o[di + 3] = 255;
       }
     }
     tctx.putImageData(out, bx, by); // identity outside the circle => seamless
@@ -1321,7 +1346,7 @@ function drawLoupe() {
     for (const rr of [0.62, 0.78, 0.92]) {   // sample a few points across the rim
       const px = (cx + Rdev * rr * ca) | 0, py = (cy + Rdev * rr * sa) | 0;
       if (px >= 0 && px < bw && py >= 0 && py < bh) {
-        const i = (py * bw + px) << 2, af = src[i + 3] / 255; // bake fade into the sample
+        const i = (py * bw + px) << 2, af = gammaLUT[src[i + 3]]; // bake+suppress fade in the sample
         r += src[i] * af; g += src[i + 1] * af; bl += src[i + 2] * af; n++;
       }
     }
@@ -1377,10 +1402,18 @@ function frame(now) {
   updateSchedule(time);
 
   tctx.clearRect(0, 0, W, H);
-  tctx.globalCompositeOperation = 'lighter'; // overlaps blend like projected light
-  tctx.textAlign = 'left';
-  tctx.textBaseline = 'alphabetic';
+  renderQuestions(tctx, time);
+  drawLoupe(time);
 
+  requestAnimationFrame(frame);
+}
+
+// Draw every live question into a context, in CSS-pixel coordinates. Used for
+// the main canvas and, at higher resolution, for the loupe's magnifier buffer.
+function renderQuestions(ctx, time) {
+  ctx.globalCompositeOperation = 'lighter'; // overlaps blend like projected light
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   for (let i = 0; i < NQ; i++) {
     const b = brightAt(i, time);
     if (b <= 0.004) continue;
@@ -1390,27 +1423,23 @@ function frame(now) {
     // slowly drift the wave phase while the question is up (fabric in a breeze)
     const w = L.wave, ct = Math.cos(L.tilt), st = Math.sin(L.tilt);
     const dphase = (time - state[i].startT) * L.drift;
-    tctx.save();
-    tctx.translate(L.rcx - L.bcx, L.rcy - L.bcy);
-    tctx.font = fontStr(L.fontPx, 400);
-    tctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${b.toFixed(3)})`; // black -> colour -> black
+    ctx.save();
+    ctx.translate(L.rcx - L.bcx, L.rcy - L.bcy);
+    ctx.font = fontStr(L.fontPx, 400);
+    ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${b.toFixed(3)})`; // black -> colour -> black
     for (const ch of L.chars) {
       const p = ch.ax * w.freq + w.phase + dphase;
       const yy = w.amp * Math.sin(p);
       const rot = Math.atan(w.amp * w.freq * Math.cos(p)) + L.tilt;
-      tctx.save();
-      tctx.translate(ch.ax * ct - yy * st, ch.ax * st + yy * ct);
-      tctx.rotate(rot);
-      tctx.fillText(ch.ch, 0, 0);
-      tctx.restore();
+      ctx.save();
+      ctx.translate(ch.ax * ct - yy * st, ch.ax * st + yy * ct);
+      ctx.rotate(rot);
+      ctx.fillText(ch.ch, 0, 0);
+      ctx.restore();
     }
-    tctx.restore();
+    ctx.restore();
   }
-  tctx.globalCompositeOperation = 'source-over';
-
-  drawLoupe();
-
-  requestAnimationFrame(frame);
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 /* ----------------------- boot ----------------------- */
