@@ -1343,10 +1343,10 @@ function drawLoupe(time) {
   for (let k = 0; k < RIM_N; k++) {
     const a = (k / RIM_N) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
     let r = 0, g = 0, bl = 0, n = 0;
-    for (const rr of [0.62, 0.78, 0.92]) {   // sample a few points across the rim
+    for (const rr of [0.6, 0.8, 1.0]) {      // sample across the rim, out to the edge
       const px = (cx + Rdev * rr * ca) | 0, py = (cy + Rdev * rr * sa) | 0;
       if (px >= 0 && px < bw && py >= 0 && py < bh) {
-        const i = (py * bw + px) << 2, af = gammaLUT[src[i + 3]]; // bake+suppress fade in the sample
+        const i = (py * bw + px) << 2, af = src[i + 3] / 255; // bake the fade (glow, not readable text — no gamma)
         r += src[i] * af; g += src[i + 1] * af; bl += src[i + 2] * af; n++;
       }
     }
@@ -1354,24 +1354,24 @@ function drawLoupe(time) {
     if (n > 0) {
       r /= n; g /= n; bl /= n;
       const bright = r + g + bl;
-      target = Math.max(0, Math.min(1, (bright - 12) / 200));
-      if (bright > 12) rimColor[k] = [Math.round(r), Math.round(g), Math.round(bl)];
+      target = Math.max(0, Math.min(1, (bright - 8) / 130)); // reach full glow sooner
+      if (bright > 8) rimColor[k] = [Math.round(r), Math.round(g), Math.round(bl)];
     }
     rimGlow[k] += (target - rimGlow[k]) * 0.08; // ease in AND out
   }
   const grad = tctx.createConicGradient(0, mx, my);
   for (let k = 0; k <= RIM_N; k++) {
     const kk = k % RIM_N, c = rimColor[kk];
-    // brighten the caught hue so the glow reads, still scaled by the fade
+    // brighten the caught hue so the glow clearly reads, still scaled by the fade
     const glow = rimGlow[kk];
-    const boost = 1.5;
+    const boost = 1.9;
     grad.addColorStop(k / RIM_N,
-      `rgba(${Math.min(255, c[0] * boost) | 0},${Math.min(255, c[1] * boost) | 0},${Math.min(255, c[2] * boost) | 0},${(glow * 0.5).toFixed(3)})`);
+      `rgba(${Math.min(255, c[0] * boost) | 0},${Math.min(255, c[1] * boost) | 0},${Math.min(255, c[2] * boost) | 0},${(glow * 0.95).toFixed(3)})`);
   }
   tctx.save();
   tctx.globalCompositeOperation = 'lighter';
   tctx.beginPath(); tctx.arc(mx, my, R, 0, Math.PI * 2);
-  tctx.lineWidth = 3.5; tctx.strokeStyle = grad; tctx.stroke();
+  tctx.lineWidth = 5; tctx.strokeStyle = grad; tctx.stroke();
   tctx.restore();
 
   // faint glass rim + a soft top-left highlight
