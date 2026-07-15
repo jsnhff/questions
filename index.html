@@ -869,6 +869,26 @@ function allowLong() { return window.innerWidth >= WIDE_THRESHOLD; }
 // Active pool: the inline POOL, or a live questions.json if present.
 let activePool = POOL;
 
+// Near-duplicate questions that shouldn't share the screen — too alike, they'd
+// read as a glitch if they appeared together. Each group is mutually exclusive:
+// the deck won't deal a question while another from its group is already up.
+const EXCLUSIVE_GROUPS = [
+  ["When will it make sense?", "Will it make sense eventually?"],
+];
+const groupOf = new Map();
+EXCLUSIVE_GROUPS.forEach((grp, gi) => grp.forEach(t => groupOf.set(t, gi)));
+// group ids currently on screen (active slots with a dealt question)
+function activeGroupIds() {
+  const s = new Set();
+  for (let i = 0; i < NQ; i++) {
+    if (state[i] && state[i].active && layout[i] && layout[i].text) {
+      const gi = groupOf.get(layout[i].text);
+      if (gi !== undefined) s.add(gi);
+    }
+  }
+  return s;
+}
+
 // Deck: a shuffled queue of the whole active pool. A question is dealt from the
 // FRONT when a slot activates and returned to the BACK when it leaves the
 // screen, so it can't reappear until the rest of the pool has cycled through.
@@ -882,13 +902,22 @@ function refillDeck() {
 }
 function deckNext() {
   const long = allowLong();
+  const activeG = activeGroupIds();
+  const ok = (q) => (long || q.length <= SHORT_MAX) &&        // length allowed here
+    (() => { const gi = groupOf.get(q); return gi === undefined || !activeG.has(gi); })(); // no near-dup on screen
   // On narrow screens, skip long questions (rotate them to the back, unshown).
+  // Also skip a question whose near-duplicate is already on screen.
   for (let tries = 0; tries < deck.length; tries++) {
     if (deck.length === 0) refillDeck();
     const q = deck.shift();
-    if (!long && q.length > SHORT_MAX) { deck.push(q); continue; }
+    if (!ok(q)) { deck.push(q); continue; }
     return q;
   }
+  // The deck's remaining questions are all too long or would duplicate a
+  // near-twin on screen. Rather than break either rule, deal any acceptable
+  // question from the pool directly (a rare last resort on a tiny pool).
+  const alt = activePool.filter(ok);
+  if (alt.length) return alt[Math.floor(Math.random() * alt.length)];
   if (deck.length === 0) refillDeck();
   return deck.shift();
 }
