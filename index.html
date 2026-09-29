@@ -872,7 +872,22 @@ const NQ = Math.min(50, POOL.length); // number of position slots on screen
 const SHORT_MAX = 40;           // everyday length
 const LONG_MAX = 56;            // longest "treat" length
 const WIDE_THRESHOLD = 800;     // css px; below this, skip the long ones
-function allowLong() { return window.innerWidth >= WIDE_THRESHOLD; }
+function allowLong() { return viewW() >= WIDE_THRESHOLD; }
+
+// Layout-viewport size. Unlike innerWidth/innerHeight, these don't shrink when
+// someone pinch-zooms on a phone, so zooming magnifies the field instead of
+// re-laying it out into the zoomed-in corner.
+function viewW() { return document.documentElement.clientWidth || window.innerWidth; }
+function viewH() { return document.documentElement.clientHeight || window.innerHeight; }
+
+// Backing-store pixels per CSS px. Includes the pinch-zoom factor so zoomed
+// text stays sharp, capped to keep the canvas within mobile memory limits.
+let renderScale = 1;
+function computeRenderScale(W, H) {
+  const dpr = window.devicePixelRatio || 1;
+  const zoom = (window.visualViewport && window.visualViewport.scale) || 1;
+  return Math.max(1, Math.min(dpr * zoom, 4, Math.sqrt(16e6 / Math.max(1, W * H))));
+}
 
 // Active pool: the inline POOL, or a live questions.json if present.
 let activePool = POOL;
@@ -951,7 +966,7 @@ async function loadPool() {
 
 /* Palette (CSS rgb) */
 const PALETTE_CSS = [
-  [0x5B, 0x2D, 0x8E], // deep violet
+  [0xA0, 0x7C, 0xF0], // violet (lifted so it reads on black)
   [0xA8, 0xE6, 0x3D], // acid green
   [0xF0, 0xA5, 0x00], // warm amber
   [0x00, 0xC8, 0xC8], // cold cyan
@@ -1166,7 +1181,7 @@ const layout = []; // { cx, cy, rcx, rcy, cssIdx, fontPx, chars, bcx, bcy, text 
 function relayoutSlot(i, text) {
   const L = layout[i];
   if (!L) return;
-  const W = window.innerWidth, H = window.innerHeight;
+  const W = viewW(), H = viewH();
   const fontPx = L.fontPx;
   tctx.font = fontStr(fontPx, 400);
   const width = tctx.measureText(text).width;
@@ -1188,12 +1203,16 @@ function relayoutSlot(i, text) {
   L.rcy = clampAxis(L.cy, MARGIN * H + halfH, (1 - MARGIN) * H - halfH, H * 0.5);
 }
 
+function sizeCanvas(W, H) {
+  renderScale = computeRenderScale(W, H);
+  textCanvas.width = Math.floor(W * renderScale);
+  textCanvas.height = Math.floor(H * renderScale);
+  tctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+}
+
 function build() {
-  const W = window.innerWidth, H = window.innerHeight;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  textCanvas.width = Math.floor(W * dpr);
-  textCanvas.height = Math.floor(H * dpr);
-  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = viewW(), H = viewH();
+  sizeCanvas(W, H);
 
   const margin = MARGIN;
   const usableW = (1 - margin * 2) * W, usableH = (1 - margin * 2) * H;
@@ -1303,7 +1322,7 @@ window.addEventListener('blur', () => { mouse.inside = false; });
 function drawLoupe(time) {
   if (!mouse.inside) return;
   const R = 30, mx = mouse.x, my = mouse.y;          // smaller loupe
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = renderScale;
 
   // region under the loupe (device pixels), clamped to the canvas
   const bx = Math.max(0, Math.round((mx - R) * dpr));
@@ -1436,7 +1455,7 @@ function frame(now) {
   if (lastFrame && now - lastFrame > 500) startTime += now - lastFrame;
   lastFrame = now;
   const time = (now - startTime) / 1000;
-  const W = window.innerWidth, H = window.innerHeight;
+  const W = viewW(), H = viewH();
 
   updateSchedule(time);
 
@@ -1482,16 +1501,26 @@ function renderQuestions(ctx, time) {
 }
 
 /* ----------------------- boot ----------------------- */
-let resizeTimer = null;
-window.addEventListener('resize', () => {
+// A real size change (rotation, window resize) re-lays out the field. A
+// pinch-zoom leaves the layout viewport alone, so it only re-renders the
+// canvas at the new sharpness; the questions stay where they are.
+let resizeTimer = null, builtW = 0, builtH = 0;
+function onViewportChange() {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(build, 200);
-});
+  resizeTimer = setTimeout(() => {
+    const W = viewW(), H = viewH();
+    if (W !== builtW || H !== builtH) { builtW = W; builtH = H; build(); }
+    else if (computeRenderScale(W, H) !== renderScale) sizeCanvas(W, H);
+  }, 200);
+}
+window.addEventListener('resize', onViewportChange);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', onViewportChange);
 
 async function boot() {
   const pool = await loadPool();          // live questions.json, or null
   if (pool) activePool = pool;
   refillDeck();
+  builtW = viewW(); builtH = viewH();
   build();
   startTime = performance.now();
   requestAnimationFrame(frame);
